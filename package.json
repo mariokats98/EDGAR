@@ -4,8 +4,10 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "build:tickers": "node ./scripts/build-ticker-map.mjs",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "lint": "next lint"
   },
   "dependencies": {
     "next": "14.2.5",
@@ -13,11 +15,9 @@
     "react-dom": "18.2.0"
   },
   "devDependencies": {
-    "typescript": "^5.5.4",
-    "@types/react": "^18.2.66",
-    "@types/node": "^20.11.30",
-    "autoprefixer": "^10.4.17",
-    "postcss": "^8.4.35",
-    "tailwindcss": "^3.4.6"
+    "autoprefixer": "^10.4.14",
+    "postcss": "^8.4.27",
+    "tailwindcss": "^3.3.3",
+    "typescript": "^5.1.6"
   }
 }
