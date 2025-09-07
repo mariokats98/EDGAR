@@ -72,11 +72,11 @@ export default function Home() {
   const abortRef = useRef<AbortController | null>(null);
   const blurTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Suggest: debounce + min length + abort prior request
+  // Suggest: debounce + (now) 1-char min + abort prior request
   useEffect(() => {
     const q = input.trim();
     // Reset state if too short
-    if (q.length < 2) {
+    if (q.length < 1) {
       if (abortRef.current) abortRef.current.abort();
       setSuggestions([]);
       setSuggestLoading(false);
@@ -235,9 +235,9 @@ export default function Home() {
               value={input}
               onChange={(e) => {
                 setInput(e.target.value);
-                if (e.target.value.trim().length >= 2) setShowSuggest(true);
+                if (e.target.value.trim().length >= 1) setShowSuggest(true);
               }}
-              onFocus={() => input.trim().length >= 2 && setShowSuggest(true)}
+              onFocus={() => input.trim().length >= 1 && setShowSuggest(true)}
               onBlur={onInputBlur}
               onKeyDown={onKeyDown}
               placeholder="Ticker (AAPL/BRK.B) • Company (APPLE) • CIK (0000320193)"
@@ -383,4 +383,5 @@ export default function Home() {
     </main>
   );
 }
+
 
