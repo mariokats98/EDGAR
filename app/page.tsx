@@ -30,24 +30,44 @@ export default function Home() {
   const [show10K, setShow10K] = useState(true);
   const [showS1, setShowS1] = useState(true);
 
-  function resolveCIK(value: string): string | null {
-    const v = value.trim().toUpperCase();
-    if (!v) return null;
-    // If it's a 10-digit number, assume CIK
-    if (/^\d{10}$/.test(v)) return v;
-    // If it's numeric shorter, left-pad
-    if (/^\d{1,9}$/.test(v)) return v.padStart(10, "0");
-    // Otherwise, look up ticker
-    const cik = (tickerMap as Record<string,string>)[v];
-    return cik || null;
+  function resolveCIKLocalOrNumeric(value: string): string | null {
+  const v = value.trim().toUpperCase();
+  if (!v) return null;
+  if (/^\d{10}$/.test(v)) return v;             // exact CIK
+  if (/^\d{1,9}$/.test(v)) return v.padStart(10, "0"); // short numeric -> 10 digits
+  // @ts-ignore local map import
+  const localMap = (tickerMap as Record<string, string>) || {};
+  if (localMap[v]) return localMap[v];          // quick local hit
+  return null;                                  // fall back to remote
+}
+
+async function fetchFilingsFor(value: string) {
+  // Use the async resolver (local → remote SEC lookup)
+  const cik = await resolveCIK(value);   // <-- important fix: added "await"
+  if (!cik) {
+    setError(
+      "Ticker/CIK not recognized. Try any ticker (e.g., TSLA, V, BRK.B), a company name (e.g., APPLE), or a 10-digit CIK."
+    );
+    return;
   }
 
-  async function fetchFilingsFor(value: string) {
-    const cik = resolveCIK(value);
-    if (!cik) {
-      setError("Ticker/CIK not recognized. Try AAPL, MSFT, AMZN or a 10-digit CIK.");
-      return;
-    }
+  setResolvedCik(cik);
+  setLoading(true);
+  setError(null);
+
+  try {
+    const r = await fetch(`/api/filings/${cik}`);
+    const j = await r.json();
+    if (!r.ok) throw new Error(j?.error || "Failed to fetch filings");
+    setFilings(j);
+  } catch (e: any) {
+    setError(e.message || "Error fetching filings");
+  } finally {
+    setLoading(false);
+  }
+}
+
+
     setResolvedCik(cik);
     setLoading(true); setError(null);
     try {
