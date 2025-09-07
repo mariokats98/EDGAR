@@ -1,0 +1,38 @@
+name: Update SEC ticker map
+
+on:
+  schedule:
+    - cron: "17 3 * * *"  # daily 03:17 UTC
+  workflow_dispatch:
+
+jobs:
+  build-ticker-map:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Generate tickerMap.json
+        env:
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+        run: npm run build:tickers
+
+      - name: Commit & push if changed
+        run: |
+          if [[ -n "$(git status --porcelain)" ]]; then
+            git config user.name "gh-actions"
+            git config user.email "actions@github.com"
+            git add app/data/tickerMap.json
+            git commit -m "chore(data): refresh SEC tickerMap.json"
+            git push
+          else
+            echo "No changes."
+          fi
