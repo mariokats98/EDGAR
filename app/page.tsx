@@ -25,11 +25,11 @@ const SAMPLE = ["AAPL", "MSFT", "AMZN"];
 function resolveCIKLocalOrNumeric(value: string): string | null {
   const v = value.trim().toUpperCase();
   if (!v) return null;
-  if (/^\d{10}$/.test(v)) return v;                 // exact CIK
+  if (/^\d{10}$/.test(v)) return v; // exact CIK
   if (/^\d{1,9}$/.test(v)) return v.padStart(10, "0"); // short numeric → 10 digits
   const localMap = (tickerMap as Record<string, string>) || {};
-  if (localMap[v]) return localMap[v];              // quick local hit
-  return null;                                      // fall back to remote
+  if (localMap[v]) return localMap[v]; // quick local hit
+  return null; // fall back to remote
 }
 
 async function resolveCIK(value: string): Promise<string | null> {
@@ -60,18 +60,18 @@ export default function Home() {
   const [show10K, setShow10K] = useState(true);
   const [showS1, setShowS1] = useState(true);
 
-  // Suggestions (stabilized)
+  // Suggestions
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
-  const [openSuggest, setOpenSuggest] = useState(false);   // dropdown visibility
+  const [openSuggest, setOpenSuggest] = useState(false);
   const [suggestLoading, setSuggestLoading] = useState(false);
-  const [activeIndex, setActiveIndex] = useState<number>(-1); // keyboard highlight
+  const [activeIndex, setActiveIndex] = useState<number>(-1);
 
   // Refs
   const rootRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  // Close on true outside click (no blur race)
+  // Close on outside click
   useEffect(() => {
     function onDocMouseDown(e: MouseEvent) {
       const root = rootRef.current;
@@ -85,16 +85,14 @@ export default function Home() {
     return () => document.removeEventListener("mousedown", onDocMouseDown);
   }, []);
 
-  // Suggest: debounce + 1-char min + abort previous + keep box open while loading
+  // Suggest effect: debounce, start after 1 char
   useEffect(() => {
     const q = input.trim();
-
     if (q.length < 1) {
       if (abortRef.current) abortRef.current.abort();
       setSuggestions([]);
       setSuggestLoading(false);
       setActiveIndex(-1);
-      // keep openSuggest as-is; it will show "No matches" if forced open, but we close here to be tidy:
       setOpenSuggest(false);
       return;
     }
@@ -106,14 +104,12 @@ export default function Home() {
         abortRef.current = ac;
 
         setSuggestLoading(true);
-        // show container immediately to avoid flicker
         setOpenSuggest(true);
 
-        const r = await fetch(`/api/suggest?q=${encodeURIComponent(q)}`, {
+        const r = await fetch(`/api/suggest?q=${encodeURIComponent(q)}&limit=200`, {
           cache: "no-store",
           signal: ac.signal,
         });
-        if (!r.ok) throw new Error("suggest_failed");
         const j = await r.json();
 
         const results: Suggestion[] = Array.isArray(j.results) ? j.results : [];
@@ -123,8 +119,7 @@ export default function Home() {
         if (e?.name !== "AbortError") {
           setSuggestions([]);
           setActiveIndex(-1);
-          // keep the box open to show "No matches" instead of collapsing
-          setOpenSuggest(true);
+          setOpenSuggest(true); // show "No matches"
         }
       } finally {
         setSuggestLoading(false);
@@ -151,14 +146,12 @@ export default function Home() {
       e.preventDefault();
       setActiveIndex((prev) => {
         const max = suggestions.length - 1;
-        if (max < 0) return -1;
         return prev < max ? prev + 1 : 0;
       });
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       setActiveIndex((prev) => {
         const max = suggestions.length - 1;
-        if (max < 0) return -1;
         return prev <= 0 ? max : prev - 1;
       });
     } else if (e.key === "Enter") {
@@ -175,12 +168,12 @@ export default function Home() {
     }
   }
 
-  // Fetch filings for ticker/CIK (async)
+  // Fetch filings
   async function fetchFilingsFor(value: string) {
     const cik = await resolveCIK(value);
     if (!cik) {
       setError(
-        "Ticker/CIK not recognized. Try any ticker (TSLA, V, BRK.B), a company name (APPLE), or a 10-digit CIK."
+        "Ticker/CIK not recognized. Try any ticker (TSLA, V, BRK.B), a company name (TESLA), or a 10-digit CIK."
       );
       return;
     }
@@ -205,7 +198,7 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Optional: auto-refresh every 60s (doesn't interfere with suggest now)
+  // Auto-refresh
   useEffect(() => {
     const id = setInterval(() => {
       fetchFilingsFor(input);
@@ -213,7 +206,7 @@ export default function Home() {
     return () => clearInterval(id);
   }, [input]);
 
-  // Filtered view
+  // Filtered filings
   const filtered = useMemo(() => {
     return filings.filter((f) => {
       const form = (f.form || "").toUpperCase();
@@ -232,7 +225,7 @@ export default function Home() {
         <header className="mb-6">
           <h1 className="text-2xl font-semibold">EDGAR Filing Cards</h1>
           <p className="text-gray-600 text-sm mt-1">
-            Enter a <strong>Ticker</strong> (AAPL/BRK.B), <strong>Company</strong> (APPLE), or <strong>CIK</strong> (10 digits).
+            Enter a <strong>Ticker</strong> (AAPL/BRK.B), <strong>Company</strong> (TESLA), or <strong>CIK</strong> (10 digits).
           </p>
         </header>
 
@@ -250,7 +243,7 @@ export default function Home() {
                 if (input.trim().length >= 1) setOpenSuggest(true);
               }}
               onKeyDown={onKeyDown}
-              placeholder="Ticker (AAPL/BRK.B) • Company (APPLE) • CIK (0000320193)"
+              placeholder="Ticker (AAPL/BRK.B) • Company (TESLA) • CIK (0000320193)"
               className="border bg-white rounded-xl px-3 py-2 w-full"
             />
             <button
@@ -262,11 +255,9 @@ export default function Home() {
             </button>
           </div>
 
-          {/* ALWAYS render when openSuggest is true – no flicker */}
           {openSuggest && (
             <div
               className="absolute z-20 mt-1 w-full rounded-xl border bg-white shadow-md max-h-72 overflow-auto"
-              // Keep focus while clicking inside
               onMouseDown={(e) => e.preventDefault()}
             >
               {suggestLoading && (
@@ -279,7 +270,7 @@ export default function Home() {
                   return (
                     <button
                       key={`${s.cik}-${i}`}
-                      onMouseDown={(e) => e.preventDefault()} // don't blur input
+                      onMouseDown={(e) => e.preventDefault()}
                       onClick={() => onPickSuggestion(s)}
                       className={`w-full text-left px-3 py-2 ${
                         active ? "bg-gray-100" : "hover:bg-gray-50"
@@ -302,7 +293,7 @@ export default function Home() {
           )}
         </div>
 
-        {/* Quick samples (optional) */}
+        {/* Quick samples */}
         <div className="flex gap-2 mb-4">
           {SAMPLE.map((t) => (
             <button
@@ -398,7 +389,3 @@ export default function Home() {
     </main>
   );
 }
-
-
-
-
