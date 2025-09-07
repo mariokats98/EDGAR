@@ -114,36 +114,52 @@ export default function Home() {
           </p>
         </header>
 
-        <div className="flex flex-wrap items-center gap-2 mb-3">
-          <input
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="Ticker (AAPL/BRK.B) • Company (APPLE) • CIK (0000320193)"
-            className="border bg-white rounded-xl px-3 py-2 w-80"
-          />
-          <button
-            onClick={() => fetchFilingsFor(input)}
-            className="rounded-xl bg-black text-white px-4 py-2 disabled:opacity-60"
-            disabled={loading}
-          >
-            {loading ? "Fetching…" : "Fetch"}
-          </button>
-          <div className="flex gap-2">
-            {SAMPLE.map((t) => (
-              <button
-                key={t}
-                onClick={() => {
-                  setInput(t);
-                  fetchFilingsFor(t);
-                }}
-                className="text-xs rounded-full bg-gray-100 px-3 py-1"
-                title={(tickerMap as Record<string, string>)[t] || ""}
-              >
-                {t}
-              </button>
-            ))}
+<div className="relative w-full max-w-md mb-3">
+  <div className="flex items-center gap-2">
+    <input
+      value={input}
+      onChange={(e) => { setInput(e.target.value); setShowSuggest(true); }}
+      onFocus={() => input.trim() && setShowSuggest(true)}
+      onBlur={() => setTimeout(() => setShowSuggest(false), 150)} // let clicks register
+      placeholder="Ticker (AAPL/BRK.B) • Company (APPLE) • CIK (0000320193)"
+      className="border bg-white rounded-xl px-3 py-2 w-full"
+    />
+    <button
+      onClick={() => fetchFilingsFor(input)}
+      className="rounded-xl bg-black text-white px-4 py-2 disabled:opacity-60"
+      disabled={loading}
+    >
+      {loading ? "Fetching…" : "Fetch"}
+    </button>
+  </div>
+
+  {showSuggest && (suggestions.length > 0 || suggestLoading) && (
+    <div className="absolute z-20 mt-1 w-full rounded-xl border bg-white shadow-md max-h-72 overflow-auto">
+      {suggestLoading && (
+        <div className="px-3 py-2 text-sm text-gray-500">Searching…</div>
+      )}
+      {!suggestLoading && suggestions.map((s, i) => (
+        <button
+          key={`${s.cik}-${i}`}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => onPickSuggestion(s)}
+          className="w-full text-left px-3 py-2 hover:bg-gray-50"
+          title={s.name}
+        >
+          <div className="flex items-center justify-between">
+            <span className="font-medium">{s.ticker}</span>
+            <span className="text-xs text-gray-500">{s.cik}</span>
           </div>
-        </div>
+          <div className="text-xs text-gray-600 truncate">{s.name}</div>
+        </button>
+      ))}
+      {!suggestLoading && suggestions.length === 0 && (
+        <div className="px-3 py-2 text-sm text-gray-500">No matches</div>
+      )}
+    </div>
+  )}
+</div>
+
 
         <div className="flex flex-wrap items-center gap-3 mb-6 text-sm">
           <span className="text-gray-700 font-medium">Filter:</span>
