@@ -62,24 +62,21 @@ export default function Home() {
 
   // Suggestions (stabilized)
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
-  const [openSuggest, setOpenSuggest] = useState(false);  // whether dropdown is visible
+  const [openSuggest, setOpenSuggest] = useState(false);   // dropdown visibility
   const [suggestLoading, setSuggestLoading] = useState(false);
   const [activeIndex, setActiveIndex] = useState<number>(-1); // keyboard highlight
-  const [isFocused, setIsFocused] = useState(false); // input focus state
-  const [hoveringMenu, setHoveringMenu] = useState(false); // mouse over menu
 
   // Refs
   const rootRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  // Close on outside click (no blur races)
+  // Close on true outside click (no blur race)
   useEffect(() => {
     function onDocMouseDown(e: MouseEvent) {
       const root = rootRef.current;
       if (!root) return;
       if (!root.contains(e.target as Node)) {
-        // clicked completely outside
         setOpenSuggest(false);
         setActiveIndex(-1);
       }
@@ -88,17 +85,16 @@ export default function Home() {
     return () => document.removeEventListener("mousedown", onDocMouseDown);
   }, []);
 
-  // Suggest: debounce + 1-char min + abort previous
+  // Suggest: debounce + 1-char min + abort previous + keep box open while loading
   useEffect(() => {
     const q = input.trim();
-    // If input not focused and user isn't hovering menu, don't spam suggests
-    if (!isFocused && !hoveringMenu) return;
 
     if (q.length < 1) {
       if (abortRef.current) abortRef.current.abort();
       setSuggestions([]);
       setSuggestLoading(false);
       setActiveIndex(-1);
+      // keep openSuggest as-is; it will show "No matches" if forced open, but we close here to be tidy:
       setOpenSuggest(false);
       return;
     }
@@ -110,6 +106,9 @@ export default function Home() {
         abortRef.current = ac;
 
         setSuggestLoading(true);
+        // show container immediately to avoid flicker
+        setOpenSuggest(true);
+
         const r = await fetch(`/api/suggest?q=${encodeURIComponent(q)}`, {
           cache: "no-store",
           signal: ac.signal,
@@ -120,12 +119,12 @@ export default function Home() {
         const results: Suggestion[] = Array.isArray(j.results) ? j.results : [];
         setSuggestions(results);
         setActiveIndex(results.length ? 0 : -1);
-        setOpenSuggest(true);
       } catch (e: any) {
         if (e?.name !== "AbortError") {
           setSuggestions([]);
           setActiveIndex(-1);
-          setOpenSuggest(false);
+          // keep the box open to show "No matches" instead of collapsing
+          setOpenSuggest(true);
         }
       } finally {
         setSuggestLoading(false);
@@ -133,7 +132,7 @@ export default function Home() {
     }, 250);
 
     return () => clearTimeout(id);
-  }, [input, isFocused, hoveringMenu]);
+  }, [input]);
 
   function onPickSuggestion(s: Suggestion) {
     setInput(s.ticker);
@@ -143,7 +142,10 @@ export default function Home() {
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
-    if (!openSuggest || (suggestions.length === 0 && !suggestLoading)) return;
+    if (!openSuggest || (suggestions.length === 0 && !suggestLoading)) {
+      if (e.key === "Enter") fetchFilingsFor(input);
+      return;
+    }
 
     if (e.key === "ArrowDown") {
       e.preventDefault();
@@ -160,8 +162,8 @@ export default function Home() {
         return prev <= 0 ? max : prev - 1;
       });
     } else if (e.key === "Enter") {
+      e.preventDefault();
       if (activeIndex >= 0 && activeIndex < suggestions.length) {
-        e.preventDefault();
         onPickSuggestion(suggestions[activeIndex]);
       } else {
         fetchFilingsFor(input);
@@ -203,14 +205,13 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Auto-refresh: pause while typing/choosing to avoid UI bumps
+  // Optional: auto-refresh every 60s (doesn't interfere with suggest now)
   useEffect(() => {
-    if (isFocused || openSuggest) return;
     const id = setInterval(() => {
       fetchFilingsFor(input);
     }, 60000);
     return () => clearInterval(id);
-  }, [input, isFocused, openSuggest]);
+  }, [input]);
 
   // Filtered view
   const filtered = useMemo(() => {
@@ -246,10 +247,8 @@ export default function Home() {
                 if (e.target.value.trim().length >= 1) setOpenSuggest(true);
               }}
               onFocus={() => {
-                setIsFocused(true);
                 if (input.trim().length >= 1) setOpenSuggest(true);
               }}
-              onBlur={() => setIsFocused(false)}
               onKeyDown={onKeyDown}
               placeholder="Ticker (AAPL/BRK.B) • Company (APPLE) • CIK (0000320193)"
               className="border bg-white rounded-xl px-3 py-2 w-full"
@@ -263,11 +262,12 @@ export default function Home() {
             </button>
           </div>
 
-          {openSuggest && (suggestions.length > 0 || suggestLoading) && (
+          {/* ALWAYS render when openSuggest is true – no flicker */}
+          {openSuggest && (
             <div
               className="absolute z-20 mt-1 w-full rounded-xl border bg-white shadow-md max-h-72 overflow-auto"
-              onMouseEnter={() => setHoveringMenu(true)}
-              onMouseLeave={() => setHoveringMenu(false)}
+              // Keep focus while clicking inside
+              onMouseDown={(e) => e.preventDefault()}
             >
               {suggestLoading && (
                 <div className="px-3 py-2 text-sm text-gray-500">Searching…</div>
@@ -279,7 +279,7 @@ export default function Home() {
                   return (
                     <button
                       key={`${s.cik}-${i}`}
-                      onMouseDown={(e) => e.preventDefault()} // keep focus while clicking
+                      onMouseDown={(e) => e.preventDefault()} // don't blur input
                       onClick={() => onPickSuggestion(s)}
                       className={`w-full text-left px-3 py-2 ${
                         active ? "bg-gray-100" : "hover:bg-gray-50"
@@ -398,6 +398,7 @@ export default function Home() {
     </main>
   );
 }
+
 
 
 
