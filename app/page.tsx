@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import tickerMap from "./data/tickerMap.json";
 
 // ----------------- Types -----------------
@@ -60,40 +60,110 @@ export default function Home() {
   const [show10K, setShow10K] = useState(true);
   const [showS1, setShowS1] = useState(true);
 
-  // Suggestions state
+  // Suggestions state (improved)
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [showSuggest, setShowSuggest] = useState(false);
   const [suggestLoading, setSuggestLoading] = useState(false);
+  const [activeIndex, setActiveIndex] = useState<number>(-1); // for keyboard nav
 
-  // Suggest: debounce & fetch from /api/suggest?q=
+  // Refs to manage blur/click and aborting
+  const dropdownRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const blurTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Suggest: debounce + min length + abort prior request
   useEffect(() => {
     const q = input.trim();
-    if (!q) {
+    // Reset state if too short
+    if (q.length < 2) {
+      if (abortRef.current) abortRef.current.abort();
       setSuggestions([]);
+      setSuggestLoading(false);
+      setActiveIndex(-1);
       setShowSuggest(false);
       return;
     }
+
+    // Debounce
     const id = setTimeout(async () => {
       try {
+        // cancel previous request if any
+        if (abortRef.current) abortRef.current.abort();
+        const ac = new AbortController();
+        abortRef.current = ac;
+
         setSuggestLoading(true);
-        const r = await fetch(`/api/suggest?q=${encodeURIComponent(q)}`, { cache: "no-store" });
+        const r = await fetch(`/api/suggest?q=${encodeURIComponent(q)}`, {
+          cache: "no-store",
+          signal: ac.signal,
+        });
+        if (!r.ok) throw new Error("suggest_failed");
         const j = await r.json();
-        setSuggestions(j.results || []);
+
+        setSuggestions(Array.isArray(j.results) ? j.results : []);
+        setActiveIndex(-1);
         setShowSuggest(true);
-      } catch {
-        setSuggestions([]);
-        setShowSuggest(false);
+      } catch (e: any) {
+        if (e?.name !== "AbortError") {
+          setSuggestions([]);
+          setActiveIndex(-1);
+          setShowSuggest(false);
+        }
       } finally {
         setSuggestLoading(false);
       }
-    }, 200); // 200ms debounce
-    return () => clearTimeout(id);
+    }, 250); // 250ms debounce
+
+    return () => {
+      clearTimeout(id);
+      // don't abort here; next request will abort previous
+    };
   }, [input]);
 
   function onPickSuggestion(s: Suggestion) {
     setInput(s.ticker);
     setShowSuggest(false);
+    setActiveIndex(-1);
     fetchFilingsFor(s.ticker);
+  }
+
+  function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (!showSuggest || (suggestions.length === 0 && !suggestLoading)) return;
+
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActiveIndex((prev) => {
+        const max = suggestions.length - 1;
+        if (max < 0) return -1;
+        return prev < max ? prev + 1 : 0;
+      });
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActiveIndex((prev) => {
+        const max = suggestions.length - 1;
+        if (max < 0) return -1;
+        return prev <= 0 ? max : prev - 1;
+      });
+    } else if (e.key === "Enter") {
+      if (activeIndex >= 0 && activeIndex < suggestions.length) {
+        e.preventDefault();
+        onPickSuggestion(suggestions[activeIndex]);
+      } else {
+        // no active selection → just fetch current input
+        fetchFilingsFor(input);
+      }
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      setShowSuggest(false);
+      setActiveIndex(-1);
+    }
+  }
+
+  function onInputBlur() {
+    // delay closing so clicks on dropdown can register
+    if (blurTimeout.current) clearTimeout(blurTimeout.current);
+    blurTimeout.current = setTimeout(() => setShowSuggest(false), 120);
   }
 
   // Fetch filings for ticker/CIK (async)
@@ -158,16 +228,18 @@ export default function Home() {
         </header>
 
         {/* Search + Suggest */}
-        <div className="relative w-full max-w-md mb-3">
+        <div className="relative w-full max-w-md mb-3" ref={dropdownRef}>
           <div className="flex items-center gap-2">
             <input
+              ref={inputRef}
               value={input}
               onChange={(e) => {
                 setInput(e.target.value);
-                setShowSuggest(true);
+                if (e.target.value.trim().length >= 2) setShowSuggest(true);
               }}
-              onFocus={() => input.trim() && setShowSuggest(true)}
-              onBlur={() => setTimeout(() => setShowSuggest(false), 150)} // let clicks register
+              onFocus={() => input.trim().length >= 2 && setShowSuggest(true)}
+              onBlur={onInputBlur}
+              onKeyDown={onKeyDown}
               placeholder="Ticker (AAPL/BRK.B) • Company (APPLE) • CIK (0000320193)"
               className="border bg-white rounded-xl px-3 py-2 w-full"
             />
@@ -185,22 +257,29 @@ export default function Home() {
               {suggestLoading && (
                 <div className="px-3 py-2 text-sm text-gray-500">Searching…</div>
               )}
+
               {!suggestLoading &&
-                suggestions.map((s, i) => (
-                  <button
-                    key={`${s.cik}-${i}`}
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => onPickSuggestion(s)}
-                    className="w-full text-left px-3 py-2 hover:bg-gray-50"
-                    title={s.name}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="font-medium">{s.ticker}</span>
-                      <span className="text-xs text-gray-500">{s.cik}</span>
-                    </div>
-                    <div className="text-xs text-gray-600 truncate">{s.name}</div>
-                  </button>
-                ))}
+                suggestions.map((s, i) => {
+                  const active = i === activeIndex;
+                  return (
+                    <button
+                      key={`${s.cik}-${i}`}
+                      onMouseDown={(e) => e.preventDefault()} // keep focus while clicking
+                      onClick={() => onPickSuggestion(s)}
+                      className={`w-full text-left px-3 py-2 ${
+                        active ? "bg-gray-100" : "hover:bg-gray-50"
+                      }`}
+                      title={s.name}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-medium">{s.ticker}</span>
+                        <span className="text-xs text-gray-500">{s.cik}</span>
+                      </div>
+                      <div className="text-xs text-gray-600 truncate">{s.name}</div>
+                    </button>
+                  );
+                })}
+
               {!suggestLoading && suggestions.length === 0 && (
                 <div className="px-3 py-2 text-sm text-gray-500">No matches</div>
               )}
@@ -304,3 +383,4 @@ export default function Home() {
     </main>
   );
 }
+
