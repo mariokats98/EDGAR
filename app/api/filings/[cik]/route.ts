@@ -16,19 +16,22 @@ function isHtmlLike(url: string) {
 }
 
 function detectItems(text: string) {
-  const items = Array.from(text.matchAll(/Item\s+\d{1,2}\.\d{2}/gi)).map(m => m[0]);
-  const set = new Set(items.map(x => x.toLowerCase()));
+  // Use .match() (widely supported) instead of .matchAll()
+  const found = text.match(/Item\s+\d{1,2}\.\d{2}/gi) || [];
+  const items = Array.from(new Set(found)); // de-dup
+  const lower = new Set(items.map(s => s.toLowerCase()));
   const badges: string[] = [];
-  if (set.has("item 1.01")) badges.push("Material Agreement (Item 1.01)");
-  if (set.has("item 5.02")) badges.push("Executive Change (Item 5.02)");
-  return { items: Array.from(new Set(items)), badges };
+  if (lower.has("item 1.01")) badges.push("Material Agreement (Item 1.01)");
+  if (lower.has("item 5.02")) badges.push("Executive Change (Item 5.02)");
+  return { items, badges };
 }
 
 function extractLargestAmount(text: string): number | null {
-  // Find largest $ amount with optional million/billion notations.
+  // Classic RegExp exec loop instead of .matchAll()
   const re = /\$?\s?([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]+)?)\s*(million|billion|m|bn)?/gi;
-  let max = null as number | null;
-  for (const m of text.matchAll(re)) {
+  let max: number | null = null;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
     let num = parseFloat(m[1].replace(/,/g, ""));
     const unit = (m[2] || "").toLowerCase();
     if (unit === "billion" || unit === "bn") num *= 1_000_000_000;
