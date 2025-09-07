@@ -1,7 +1,9 @@
 "use client";
+
 import { useEffect, useMemo, useState } from "react";
 import tickerMap from "./data/tickerMap.json";
 
+// ----------------- Types -----------------
 type Filing = {
   cik: string;
   company: string;
@@ -15,17 +17,19 @@ type Filing = {
   amount_usd?: number | null;
 };
 
+type Suggestion = { ticker: string; cik: string; name: string };
+
 const SAMPLE = ["AAPL", "MSFT", "AMZN"];
 
-// ---------- helpers ----------
+// ------------- Helper: resolve CIK -------------
 function resolveCIKLocalOrNumeric(value: string): string | null {
   const v = value.trim().toUpperCase();
   if (!v) return null;
-  if (/^\d{10}$/.test(v)) return v; // exact CIK
-  if (/^\d{1,9}$/.test(v)) return v.padStart(10, "0"); // numeric, pad to 10
+  if (/^\d{10}$/.test(v)) return v;                 // exact CIK
+  if (/^\d{1,9}$/.test(v)) return v.padStart(10, "0"); // short numeric → 10 digits
   const localMap = (tickerMap as Record<string, string>) || {};
-  if (localMap[v]) return localMap[v]; // quick local hit
-  return null; // let remote handle it
+  if (localMap[v]) return localMap[v];              // quick local hit
+  return null;                                      // let remote handle
 }
 
 async function resolveCIK(value: string): Promise<string | null> {
@@ -41,33 +45,60 @@ async function resolveCIK(value: string): Promise<string | null> {
   }
 }
 
-// ---------- page ----------
+// ----------------- Page -----------------
 export default function Home() {
+  // Core state
   const [input, setInput] = useState("AAPL");
   const [resolvedCik, setResolvedCik] = useState<string>("0000320193");
   const [filings, setFilings] = useState<Filing[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Filters
   const [show8K, setShow8K] = useState(true);
   const [show10Q, setShow10Q] = useState(true);
   const [show10K, setShow10K] = useState(true);
   const [showS1, setShowS1] = useState(true);
 
-  const filtered = useMemo(() => {
-    return filings.filter((f) => {
-      const form = (f.form || "").toUpperCase();
-      if (form.startsWith("8-K")) return show8K;
-      if (form === "10-Q") return show10Q;
-      if (form === "10-K") return show10K;
-      if (form.startsWith("S-1") || form.startsWith("424B")) return showS1;
-      return true;
-    });
-  }, [filings, show8K, show10Q, show10K, showS1]);
+  // Suggestions state
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+  const [showSuggest, setShowSuggest] = useState(false);
+  const [suggestLoading, setSuggestLoading] = useState(false);
 
-  // fetcher (MUST be async because we use await inside)
+  // Suggest: debounce & fetch from /api/suggest?q=
+  useEffect(() => {
+    const q = input.trim();
+    if (!q) {
+      setSuggestions([]);
+      setShowSuggest(false);
+      return;
+    }
+    const id = setTimeout(async () => {
+      try {
+        setSuggestLoading(true);
+        const r = await fetch(`/api/suggest?q=${encodeURIComponent(q)}`, { cache: "no-store" });
+        const j = await r.json();
+        setSuggestions(j.results || []);
+        setShowSuggest(true);
+      } catch {
+        setSuggestions([]);
+        setShowSuggest(false);
+      } finally {
+        setSuggestLoading(false);
+      }
+    }, 200); // 200ms debounce
+    return () => clearTimeout(id);
+  }, [input]);
+
+  function onPickSuggestion(s: Suggestion) {
+    setInput(s.ticker);
+    setShowSuggest(false);
+    fetchFilingsFor(s.ticker);
+  }
+
+  // Fetch filings for ticker/CIK (async)
   async function fetchFilingsFor(value: string) {
-    const cik = await resolveCIK(value); // <-- important: await
+    const cik = await resolveCIK(value); // IMPORTANT: await
     if (!cik) {
       setError(
         "Ticker/CIK not recognized. Try any ticker (TSLA, V, BRK.B), a company name (APPLE), or a 10-digit CIK."
@@ -89,14 +120,13 @@ export default function Home() {
     }
   }
 
-  // initial load
+  // Initial load
   useEffect(() => {
-    // fire and forget is fine; function is async
     fetchFilingsFor("AAPL");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // auto-refresh every 60s for current input
+  // Optional: auto-refresh every 60s for current input
   useEffect(() => {
     const id = setInterval(() => {
       fetchFilingsFor(input);
@@ -104,6 +134,19 @@ export default function Home() {
     return () => clearInterval(id);
   }, [input]);
 
+  // Filtered view
+  const filtered = useMemo(() => {
+    return filings.filter((f) => {
+      const form = (f.form || "").toUpperCase();
+      if (form.startsWith("8-K")) return show8K;
+      if (form === "10-Q") return show10Q;
+      if (form === "10-K") return show10K;
+      if (form.startsWith("S-1") || form.startsWith("424B")) return showS1;
+      return true;
+    });
+  }, [filings, show8K, show10Q, show10K, showS1]);
+
+  // ----------------- UI -----------------
   return (
     <main className="min-h-screen">
       <div className="mx-auto max-w-5xl px-4 py-10">
@@ -114,53 +157,75 @@ export default function Home() {
           </p>
         </header>
 
-<div className="relative w-full max-w-md mb-3">
-  <div className="flex items-center gap-2">
-    <input
-      value={input}
-      onChange={(e) => { setInput(e.target.value); setShowSuggest(true); }}
-      onFocus={() => input.trim() && setShowSuggest(true)}
-      onBlur={() => setTimeout(() => setShowSuggest(false), 150)} // let clicks register
-      placeholder="Ticker (AAPL/BRK.B) • Company (APPLE) • CIK (0000320193)"
-      className="border bg-white rounded-xl px-3 py-2 w-full"
-    />
-    <button
-      onClick={() => fetchFilingsFor(input)}
-      className="rounded-xl bg-black text-white px-4 py-2 disabled:opacity-60"
-      disabled={loading}
-    >
-      {loading ? "Fetching…" : "Fetch"}
-    </button>
-  </div>
-
-  {showSuggest && (suggestions.length > 0 || suggestLoading) && (
-    <div className="absolute z-20 mt-1 w-full rounded-xl border bg-white shadow-md max-h-72 overflow-auto">
-      {suggestLoading && (
-        <div className="px-3 py-2 text-sm text-gray-500">Searching…</div>
-      )}
-      {!suggestLoading && suggestions.map((s, i) => (
-        <button
-          key={`${s.cik}-${i}`}
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={() => onPickSuggestion(s)}
-          className="w-full text-left px-3 py-2 hover:bg-gray-50"
-          title={s.name}
-        >
-          <div className="flex items-center justify-between">
-            <span className="font-medium">{s.ticker}</span>
-            <span className="text-xs text-gray-500">{s.cik}</span>
+        {/* Search + Suggest */}
+        <div className="relative w-full max-w-md mb-3">
+          <div className="flex items-center gap-2">
+            <input
+              value={input}
+              onChange={(e) => {
+                setInput(e.target.value);
+                setShowSuggest(true);
+              }}
+              onFocus={() => input.trim() && setShowSuggest(true)}
+              onBlur={() => setTimeout(() => setShowSuggest(false), 150)} // let clicks register
+              placeholder="Ticker (AAPL/BRK.B) • Company (APPLE) • CIK (0000320193)"
+              className="border bg-white rounded-xl px-3 py-2 w-full"
+            />
+            <button
+              onClick={() => fetchFilingsFor(input)}
+              className="rounded-xl bg-black text-white px-4 py-2 disabled:opacity-60"
+              disabled={loading}
+            >
+              {loading ? "Fetching…" : "Fetch"}
+            </button>
           </div>
-          <div className="text-xs text-gray-600 truncate">{s.name}</div>
-        </button>
-      ))}
-      {!suggestLoading && suggestions.length === 0 && (
-        <div className="px-3 py-2 text-sm text-gray-500">No matches</div>
-      )}
-    </div>
-  )}
-</div>
 
+          {showSuggest && (suggestions.length > 0 || suggestLoading) && (
+            <div className="absolute z-20 mt-1 w-full rounded-xl border bg-white shadow-md max-h-72 overflow-auto">
+              {suggestLoading && (
+                <div className="px-3 py-2 text-sm text-gray-500">Searching…</div>
+              )}
+              {!suggestLoading &&
+                suggestions.map((s, i) => (
+                  <button
+                    key={`${s.cik}-${i}`}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => onPickSuggestion(s)}
+                    className="w-full text-left px-3 py-2 hover:bg-gray-50"
+                    title={s.name}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium">{s.ticker}</span>
+                      <span className="text-xs text-gray-500">{s.cik}</span>
+                    </div>
+                    <div className="text-xs text-gray-600 truncate">{s.name}</div>
+                  </button>
+                ))}
+              {!suggestLoading && suggestions.length === 0 && (
+                <div className="px-3 py-2 text-sm text-gray-500">No matches</div>
+              )}
+            </div>
+          )}
+        </div>
 
+        {/* Quick samples (optional) */}
+        <div className="flex gap-2 mb-4">
+          {SAMPLE.map((t) => (
+            <button
+              key={t}
+              onClick={() => {
+                setInput(t);
+                fetchFilingsFor(t);
+              }}
+              className="text-xs rounded-full bg-gray-100 px-3 py-1"
+              title={(tickerMap as Record<string, string>)[t] || ""}
+            >
+              {t}
+            </button>
+          ))}
+        </div>
+
+        {/* Filters */}
         <div className="flex flex-wrap items-center gap-3 mb-6 text-sm">
           <span className="text-gray-700 font-medium">Filter:</span>
           <label className="flex items-center gap-2">
@@ -182,6 +247,7 @@ export default function Home() {
 
         {error && <div className="text-red-600 text-sm mb-4">Error: {error}</div>}
 
+        {/* Filing cards */}
         <section className="grid md:grid-cols-2 gap-4">
           {filtered.map((f, i) => (
             <article key={i} className="rounded-2xl bg-white p-4 shadow-sm border">
@@ -206,7 +272,8 @@ export default function Home() {
 
               {typeof f.amount_usd === "number" && (
                 <div className="mt-2 text-sm">
-                  <span className="font-semibold">Largest amount: </span>${(f.amount_usd / 1_000_000).toFixed(1)}M
+                  <span className="font-semibold">Largest amount: </span>
+                  ${(f.amount_usd / 1_000_000).toFixed(1)}M
                 </div>
               )}
 
