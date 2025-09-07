@@ -1,38 +1,61 @@
 // app/api/suggest/route.ts
 import { NextResponse } from "next/server";
 
-export const runtime = "nodejs";          // force Node runtime
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 type Row = { ticker: string; cik: string; name: string };
 
 const SEC_HEADERS_BASE = {
   "User-Agent": process.env.SEC_USER_AGENT || "EDGARCards/1.0 (support@example.com)",
-  "Accept": "application/json",
+  Accept: "application/json",
 };
 
-function pad10(cik: string | number) {
-  const s = String(cik).replace(/\D/g, "");
+const KV_URL = process.env.UPSTASH_REDIS_REST_URL || "";
+const KV_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || "";
+const KV_KEY = "sec:tickerIndex:v1";
+const TTL_SEC = 60 * 60;
+
+function pad10(x: string | number) {
+  const s = String(x ?? "").replace(/\D/g, "");
   return s.padStart(10, "0");
 }
-
 function norms(sym: string): string[] {
-  const u = sym.toUpperCase().trim();
-  const noDots = u.replace(/\./g, "");
+  const u = String(sym || "").toUpperCase().trim();
+  const nodots = u.replace(/\./g, "");
   const dash = u.replace(/\./g, "-");
   const plain = u.replace(/[-.]/g, "");
-  return Array.from(new Set([u, dash, noDots, plain]));
+  return Array.from(new Set([u, nodots, dash, plain]));
 }
 
-let CACHE: Row[] | null = null;
-let LAST = 0;
-const TTL_MS = 60 * 60 * 1000;
-
-function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
+async function kvGet(): Promise<Row[] | null> {
+  if (!KV_URL || !KV_TOKEN) return null;
+  const r = await fetch(`${KV_URL}/get/${encodeURIComponent(KV_KEY)}`, {
+    headers: { Authorization: `Bearer ${KV_TOKEN}` },
+    cache: "no-store",
+  });
+  if (!r.ok) return null;
+  const j = await r.json();
+  if (!j || typeof j.result !== "string") return null;
+  try {
+    return JSON.parse(j.result);
+  } catch {
+    return null;
+  }
 }
+async function kvSet(rows: Row[]): Promise<void> {
+  if (!KV_URL || !KV_TOKEN) return;
+  await fetch(`${KV_URL}/set/${encodeURIComponent(KV_KEY)}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${KV_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ value: JSON.stringify(rows), EX: TTL_SEC }),
+  }).catch(() => {});
+}
+
 async function fetchJSON(url: string, headers: Record<string, string>) {
-  let err: any = null;
   let delay = 200;
   for (let i = 0; i < 4; i++) {
     try {
@@ -40,17 +63,16 @@ async function fetchJSON(url: string, headers: Record<string, string>) {
       if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
       return await r.json();
     } catch (e) {
-      err = e;
-      await sleep(delay);
+      await new Promise((res) => setTimeout(res, delay));
       delay *= 2;
     }
   }
-  throw err || new Error("fetch_failed");
+  throw new Error("fetch_failed");
 }
 
-async function loadAll(hostHint?: string): Promise<Row[]> {
-  const now = Date.now();
-  if (CACHE && now - LAST < TTL_MS) return CACHE;
+async function loadIndex(hostHint?: string): Promise<Row[]> {
+  const cached = await kvGet();
+  if (cached && cached.length) return cached;
 
   const SEC_HEADERS = {
     ...SEC_HEADERS_BASE,
@@ -75,7 +97,7 @@ async function loadAll(hostHint?: string): Promise<Row[]> {
       }));
     }
   } catch {
-    // optional; ignore failures
+    // optional
   }
 
   const byPlain = new Map<string, Row>();
@@ -88,9 +110,9 @@ async function loadAll(hostHint?: string): Promise<Row[]> {
   arr2.forEach(push);
   arr1.forEach(push);
 
-  CACHE = Array.from(byPlain.values());
-  LAST = now;
-  return CACHE;
+  const rows = Array.from(byPlain.values());
+  kvSet(rows).catch(() => {});
+  return rows;
 }
 
 function scoreRow(q: string, row: Row): number {
@@ -98,7 +120,7 @@ function scoreRow(q: string, row: Row): number {
   const qPlain = Q.replace(/[-.]/g, "");
   const tickerVars = norms(row.ticker).map((v) => v.replace(/[-.]/g, ""));
 
-  if (tickerVars.includes(qPlain)) return 100;
+  if (tickerVars.includes(qPlain)) return 100;             // exact ticker
   if (tickerVars.some((t) => t.startsWith(qPlain))) return 90;
   if (tickerVars.some((t) => t.includes(qPlain))) return 75;
 
@@ -119,11 +141,11 @@ export async function GET(req: Request) {
 
     if (!q) return NextResponse.json({ results: [] });
 
-    const list = await loadAll(host);
+    const list = await loadIndex(host);
     const Q = q.toUpperCase();
 
+    // 1-letter: return all that start with it (ticker OR name)
     if (Q.length === 1) {
-      // show *all* that start with this letter (ticker OR name)
       const starts = list
         .filter((r) => r.ticker.startsWith(Q) || r.name.toUpperCase().startsWith(Q))
         .sort((a, b) => a.ticker.localeCompare(b.ticker))
@@ -131,6 +153,7 @@ export async function GET(req: Request) {
       return NextResponse.json({ results: starts });
     }
 
+    // Ranked search for ticker/name
     const scored = list
       .map((row) => ({ row, s: scoreRow(q, row) }))
       .filter((x) => x.s > 0)
@@ -140,7 +163,7 @@ export async function GET(req: Request) {
 
     return NextResponse.json({ results: scored });
   } catch (e: any) {
-    // Return empty array (not 500) so UI shows "No matches" but stays open
+    // don't 500 the UI — return empty; dropdown shows "No matches"
     return NextResponse.json({ results: [], error: e?.message || "suggest_failed" }, { status: 200 });
   }
 }
