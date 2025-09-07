@@ -29,7 +29,7 @@ function resolveCIKLocalOrNumeric(value: string): string | null {
   if (/^\d{1,9}$/.test(v)) return v.padStart(10, "0"); // short numeric → 10 digits
   const localMap = (tickerMap as Record<string, string>) || {};
   if (localMap[v]) return localMap[v];              // quick local hit
-  return null;                                      // let remote handle
+  return null;                                      // fall back to remote
 }
 
 async function resolveCIK(value: string): Promise<string | null> {
@@ -60,35 +60,51 @@ export default function Home() {
   const [show10K, setShow10K] = useState(true);
   const [showS1, setShowS1] = useState(true);
 
-  // Suggestions state (improved)
+  // Suggestions (stabilized)
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
-  const [showSuggest, setShowSuggest] = useState(false);
+  const [openSuggest, setOpenSuggest] = useState(false);  // whether dropdown is visible
   const [suggestLoading, setSuggestLoading] = useState(false);
-  const [activeIndex, setActiveIndex] = useState<number>(-1); // for keyboard nav
+  const [activeIndex, setActiveIndex] = useState<number>(-1); // keyboard highlight
+  const [isFocused, setIsFocused] = useState(false); // input focus state
+  const [hoveringMenu, setHoveringMenu] = useState(false); // mouse over menu
 
-  // Refs to manage blur/click and aborting
-  const dropdownRef = useRef<HTMLDivElement | null>(null);
+  // Refs
+  const rootRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-  const blurTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Suggest: debounce + (now) 1-char min + abort prior request
+  // Close on outside click (no blur races)
+  useEffect(() => {
+    function onDocMouseDown(e: MouseEvent) {
+      const root = rootRef.current;
+      if (!root) return;
+      if (!root.contains(e.target as Node)) {
+        // clicked completely outside
+        setOpenSuggest(false);
+        setActiveIndex(-1);
+      }
+    }
+    document.addEventListener("mousedown", onDocMouseDown);
+    return () => document.removeEventListener("mousedown", onDocMouseDown);
+  }, []);
+
+  // Suggest: debounce + 1-char min + abort previous
   useEffect(() => {
     const q = input.trim();
-    // Reset state if too short
+    // If input not focused and user isn't hovering menu, don't spam suggests
+    if (!isFocused && !hoveringMenu) return;
+
     if (q.length < 1) {
       if (abortRef.current) abortRef.current.abort();
       setSuggestions([]);
       setSuggestLoading(false);
       setActiveIndex(-1);
-      setShowSuggest(false);
+      setOpenSuggest(false);
       return;
     }
 
-    // Debounce
     const id = setTimeout(async () => {
       try {
-        // cancel previous request if any
         if (abortRef.current) abortRef.current.abort();
         const ac = new AbortController();
         abortRef.current = ac;
@@ -101,35 +117,33 @@ export default function Home() {
         if (!r.ok) throw new Error("suggest_failed");
         const j = await r.json();
 
-        setSuggestions(Array.isArray(j.results) ? j.results : []);
-        setActiveIndex(-1);
-        setShowSuggest(true);
+        const results: Suggestion[] = Array.isArray(j.results) ? j.results : [];
+        setSuggestions(results);
+        setActiveIndex(results.length ? 0 : -1);
+        setOpenSuggest(true);
       } catch (e: any) {
         if (e?.name !== "AbortError") {
           setSuggestions([]);
           setActiveIndex(-1);
-          setShowSuggest(false);
+          setOpenSuggest(false);
         }
       } finally {
         setSuggestLoading(false);
       }
-    }, 250); // 250ms debounce
+    }, 250);
 
-    return () => {
-      clearTimeout(id);
-      // don't abort here; next request will abort previous
-    };
-  }, [input]);
+    return () => clearTimeout(id);
+  }, [input, isFocused, hoveringMenu]);
 
   function onPickSuggestion(s: Suggestion) {
     setInput(s.ticker);
-    setShowSuggest(false);
+    setOpenSuggest(false);
     setActiveIndex(-1);
     fetchFilingsFor(s.ticker);
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
-    if (!showSuggest || (suggestions.length === 0 && !suggestLoading)) return;
+    if (!openSuggest || (suggestions.length === 0 && !suggestLoading)) return;
 
     if (e.key === "ArrowDown") {
       e.preventDefault();
@@ -150,25 +164,18 @@ export default function Home() {
         e.preventDefault();
         onPickSuggestion(suggestions[activeIndex]);
       } else {
-        // no active selection → just fetch current input
         fetchFilingsFor(input);
       }
     } else if (e.key === "Escape") {
       e.preventDefault();
-      setShowSuggest(false);
+      setOpenSuggest(false);
       setActiveIndex(-1);
     }
   }
 
-  function onInputBlur() {
-    // delay closing so clicks on dropdown can register
-    if (blurTimeout.current) clearTimeout(blurTimeout.current);
-    blurTimeout.current = setTimeout(() => setShowSuggest(false), 120);
-  }
-
   // Fetch filings for ticker/CIK (async)
   async function fetchFilingsFor(value: string) {
-    const cik = await resolveCIK(value); // IMPORTANT: await
+    const cik = await resolveCIK(value);
     if (!cik) {
       setError(
         "Ticker/CIK not recognized. Try any ticker (TSLA, V, BRK.B), a company name (APPLE), or a 10-digit CIK."
@@ -196,13 +203,14 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Optional: auto-refresh every 60s for current input
+  // Auto-refresh: pause while typing/choosing to avoid UI bumps
   useEffect(() => {
+    if (isFocused || openSuggest) return;
     const id = setInterval(() => {
       fetchFilingsFor(input);
     }, 60000);
     return () => clearInterval(id);
-  }, [input]);
+  }, [input, isFocused, openSuggest]);
 
   // Filtered view
   const filtered = useMemo(() => {
@@ -228,17 +236,20 @@ export default function Home() {
         </header>
 
         {/* Search + Suggest */}
-        <div className="relative w-full max-w-md mb-3" ref={dropdownRef}>
+        <div className="relative w-full max-w-md mb-3" ref={rootRef}>
           <div className="flex items-center gap-2">
             <input
               ref={inputRef}
               value={input}
               onChange={(e) => {
                 setInput(e.target.value);
-                if (e.target.value.trim().length >= 1) setShowSuggest(true);
+                if (e.target.value.trim().length >= 1) setOpenSuggest(true);
               }}
-              onFocus={() => input.trim().length >= 1 && setShowSuggest(true)}
-              onBlur={onInputBlur}
+              onFocus={() => {
+                setIsFocused(true);
+                if (input.trim().length >= 1) setOpenSuggest(true);
+              }}
+              onBlur={() => setIsFocused(false)}
               onKeyDown={onKeyDown}
               placeholder="Ticker (AAPL/BRK.B) • Company (APPLE) • CIK (0000320193)"
               className="border bg-white rounded-xl px-3 py-2 w-full"
@@ -252,8 +263,12 @@ export default function Home() {
             </button>
           </div>
 
-          {showSuggest && (suggestions.length > 0 || suggestLoading) && (
-            <div className="absolute z-20 mt-1 w-full rounded-xl border bg-white shadow-md max-h-72 overflow-auto">
+          {openSuggest && (suggestions.length > 0 || suggestLoading) && (
+            <div
+              className="absolute z-20 mt-1 w-full rounded-xl border bg-white shadow-md max-h-72 overflow-auto"
+              onMouseEnter={() => setHoveringMenu(true)}
+              onMouseLeave={() => setHoveringMenu(false)}
+            >
               {suggestLoading && (
                 <div className="px-3 py-2 text-sm text-gray-500">Searching…</div>
               )}
@@ -383,5 +398,6 @@ export default function Home() {
     </main>
   );
 }
+
 
 
