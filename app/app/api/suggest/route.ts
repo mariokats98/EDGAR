@@ -13,7 +13,7 @@ function pad10(cik: string | number) {
   return s.padStart(10, "0");
 }
 
-// normalize ticker variants: BRK.B, BRK-B, brk.b, etc.
+// normalize ticker variants: BRK.B, BRK-B, etc.
 function norms(sym: string): string[] {
   const u = sym.toUpperCase().trim();
   const noDots = u.replace(/\./g, "");
@@ -40,7 +40,7 @@ async function loadAll(): Promise<Row[]> {
     name: String(j1[k].title || ""),
   }));
 
-  // 2) Exchange list (broader coverage, ADRs, etc.)
+  // 2) Exchange list (broader coverage)
   const r2 = await fetch("https://www.sec.gov/files/company_tickers_exchange.json", { headers: SEC_HEADERS, cache: "no-store" });
   const arr2: Row[] = [];
   if (r2.ok) {
@@ -75,11 +75,8 @@ function scoreRow(q: string, row: Row): number {
   const qPlain = Q.replace(/[-.]/g, "");
   const tickerVariants = norms(row.ticker).map((v) => v.replace(/[-.]/g, ""));
 
-  // Highest: exact ticker match on any variant
-  if (tickerVariants.includes(qPlain)) return 100;
-  // Starts with ticker
+  if (tickerVariants.includes(qPlain)) return 100;         // exact ticker
   if (tickerVariants.some((t) => t.startsWith(qPlain))) return 90;
-  // Contains ticker
   if (tickerVariants.some((t) => t.includes(qPlain))) return 75;
 
   const nameU = row.name.toUpperCase();
@@ -92,13 +89,29 @@ function scoreRow(q: string, row: Row): number {
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
-    const q = url.searchParams.get("q") || "";
-    const limit = Math.min(12, Math.max(3, Number(url.searchParams.get("limit") || 8)));
+    const q = (url.searchParams.get("q") || "").trim();
+    const limitParam = Number(url.searchParams.get("limit") || 50);
+    const limit = Math.min(100, Math.max(10, limitParam)); // cap to keep it fast
 
-    if (!q.trim()) return NextResponse.json({ results: [] });
+    if (!q) return NextResponse.json({ results: [] });
 
     const list = await loadAll();
-    // score & sort
+    const Q = q.toUpperCase();
+
+    // ⭐ If only 1 letter typed → return all tickers/names that START WITH that letter
+    if (Q.length === 1) {
+      const starts = list
+        .filter(
+          (r) =>
+            r.ticker.startsWith(Q) ||
+            r.name.toUpperCase().startsWith(Q)
+        )
+        .sort((a, b) => a.ticker.localeCompare(b.ticker))
+        .slice(0, limit);
+      return NextResponse.json({ results: starts });
+    }
+
+    // Otherwise → ranked search
     const scored = list
       .map((row) => ({ row, s: scoreRow(q, row) }))
       .filter((x) => x.s > 0)
